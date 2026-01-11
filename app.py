@@ -42,6 +42,11 @@ def get_video_info(url):
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                }
+            },
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -124,6 +129,11 @@ def download_video(url, download_id, quality='highest'):
         ydl_opts_info = {
             'quiet': True,
             'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                }
+            },
         }
         
         with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
@@ -140,6 +150,11 @@ def download_video(url, download_id, quality='highest'):
             'progress_hooks': [hook],
             'quiet': False,
             'no_warnings': False,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                }
+            },
         }
         
         update_progress(download_id, 10, 'downloading')
