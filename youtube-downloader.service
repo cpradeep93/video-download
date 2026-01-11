@@ -1,0 +1,15 @@
+[Unit]
+Description=YouTube Downloader Flask App
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/flask-app/video-download
+Environment="PATH=/home/ubuntu/flask-app/video-download/venv/bin"
+ExecStart=/home/ubuntu/flask-app/video-download/venv/bin/gunicorn app:app --bind 0.0.0.0:5000 --workers 2
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,11 +1,12 @@
 from flask import Flask, request, jsonify, send_file, Response
-from pytubefix import YouTube
+import yt_dlp
 import os
 import tempfile
 import logging
 import threading
 import time
 import uuid
+import json
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -20,7 +21,7 @@ download_files = {}  # Store filepath with download_id
 progress_lock = threading.Lock()
 
 
-def update_progress(download_id, progress, status='downloading', filepath=None):
+def update_progress(download_id, progress, status='downloading', filepath=None, error_msg=None):
     """Update download progress"""
     with progress_lock:
         download_progress[download_id] = {
@@ -28,129 +29,157 @@ def update_progress(download_id, progress, status='downloading', filepath=None):
             'status': status,
             'timestamp': time.time()
         }
+        if error_msg:
+            download_progress[download_id]['error'] = error_msg
         if filepath:
             download_files[download_id] = filepath
 
 
-def get_video_info(url, max_retries=3, retry_delay=2):
-    """Get video information without downloading with retry logic"""
-    last_error = None
-    
-    for attempt in range(max_retries):
-        try:
-            # Add delay between retries to avoid rate limiting
-            if attempt > 0:
-                time.sleep(retry_delay * attempt)  # Exponential backoff
-            
-            # Use ANDROID_VR as default (pytubefix default)
-            yt = YouTube(url, client='ANDROID_VR')
-            streams = yt.streams.filter(progressive=True, file_extension='mp4')
+def get_video_info(url):
+    """Get video information without downloading using yt-dlp"""
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
             
             video_info = {
-                'title': yt.title,
-                'author': yt.author,
-                'length': yt.length,
-                'views': yt.views,
-                'thumbnail': yt.thumbnail_url,
+                'title': info.get('title', 'Unknown'),
+                'author': info.get('uploader', 'Unknown'),
+                'length': info.get('duration', 0),
+                'views': info.get('view_count', 0),
+                'thumbnail': info.get('thumbnail', ''),
                 'available_streams': []
             }
             
-            for stream in streams.order_by('resolution').desc():
-                video_info['available_streams'].append({
-                    'itag': stream.itag,
-                    'resolution': stream.resolution,
-                    'fps': stream.fps,
-                    'filesize': stream.filesize,
-                    'mime_type': stream.mime_type
-                })
+            # Get available formats
+            formats = info.get('formats', [])
+            for fmt in formats:
+                if fmt.get('vcodec') != 'none' and fmt.get('ext') == 'mp4':
+                    video_info['available_streams'].append({
+                        'format_id': fmt.get('format_id'),
+                        'resolution': fmt.get('resolution', 'unknown'),
+                        'fps': fmt.get('fps'),
+                        'filesize': fmt.get('filesize'),
+                        'format_note': fmt.get('format_note', '')
+                    })
             
             return video_info, None
-        except Exception as e:
-            last_error = e
-            error_msg = str(e)
-            # Don't retry on certain errors
-            if 'LoginRequired' in error_msg or 'VideoUnavailable' in error_msg:
-                break
-            continue
-    
-    # All retries failed
-    error_msg = str(last_error) if last_error else "Unknown error"
-    if '429' in error_msg or 'Too Many Requests' in error_msg:
-        return None, "Rate limit exceeded. Please wait 5-10 minutes before trying again."
-    elif 'bot' in error_msg.lower() or 'automated' in error_msg.lower():
-        return None, "YouTube detected automated access. This is a known limitation of pytubefix. Possible solutions: 1) Wait 10-15 minutes, 2) Try from a different network, 3) Use a browser extension for manual downloads."
-    else:
-        return None, f"Error: {error_msg}"
+    except Exception as e:
+        return None, str(e)
 
 
-def on_progress_callback(stream, chunk, bytes_remaining, download_id):
-    """Callback function for download progress"""
-    total_size = stream.filesize
-    bytes_downloaded = total_size - bytes_remaining
-    progress = (bytes_downloaded / total_size) * 100 if total_size > 0 else 0
-    update_progress(download_id, progress, 'downloading')
+def progress_hook(d, download_id):
+    """Progress hook for yt-dlp"""
+    if d['status'] == 'downloading':
+        if 'total_bytes' in d:
+            progress = (d['downloaded_bytes'] / d['total_bytes']) * 100
+        elif 'total_bytes_estimate' in d:
+            progress = (d['downloaded_bytes'] / d['total_bytes_estimate']) * 100
+        else:
+            progress = 0
+        update_progress(download_id, progress, 'downloading')
+    elif d['status'] == 'finished':
+        # Don't mark as completed here - let download_video handle it
+        update_progress(download_id, 95, 'processing')
 
 
-def download_video(url, download_id, itag=None, quality='highest', max_retries=3, retry_delay=2):
-    """Download YouTube video with progress tracking and retry logic"""
-    last_error = None
-    
-    for attempt in range(max_retries):
-        try:
-            update_progress(download_id, 0, f'initializing (attempt {attempt + 1}/{max_retries})')
+def download_video(url, download_id, quality='highest'):
+    """Download YouTube video with progress tracking using yt-dlp"""
+    downloaded_filepath = None
+    try:
+        update_progress(download_id, 0, 'initializing')
+        
+        # Map quality to yt-dlp format selector (using single-file formats to avoid ffmpeg requirement)
+        format_selector = 'best[ext=mp4]/best'
+        if quality == '720p':
+            format_selector = 'best[height<=720][ext=mp4]/best[height<=720]/best'
+        elif quality == '480p':
+            format_selector = 'best[height<=480][ext=mp4]/best[height<=480]/best'
+        elif quality == '360p':
+            format_selector = 'best[height<=360][ext=mp4]/best[height<=360]/best'
+        elif quality == '240p':
+            format_selector = 'best[height<=240][ext=mp4]/best[height<=240]/best'
+        elif quality == '144p':
+            format_selector = 'best[height<=144][ext=mp4]/best[height<=144]/best'
+        elif quality == 'lowest':
+            format_selector = 'worst[ext=mp4]/worst'
+        
+        update_progress(download_id, 5, 'fetching_info')
+        
+        # Store downloaded filepath in hook
+        downloaded_filepath_container = {'path': None}
+        
+        # Create progress hook
+        def hook(d):
+            progress_hook(d, download_id)
+            if d['status'] == 'finished' and 'filename' in d:
+                downloaded_filepath_container['path'] = d['filename']
+        
+        # Get info first to get filename
+        ydl_opts_info = {
+            'quiet': True,
+            'no_warnings': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'video')
+        
+        # Clean filename
+        safe_title = secure_filename(title)
+        
+        # Configure yt-dlp options for download
+        ydl_opts = {
+            'format': format_selector,
+            'outtmpl': os.path.join(DOWNLOAD_DIR, safe_title + '.%(ext)s'),
+            'progress_hooks': [hook],
+            'quiet': False,
+            'no_warnings': False,
+        }
+        
+        update_progress(download_id, 10, 'downloading')
+        
+        # Download
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        
+        # Get the downloaded file path
+        filepath = downloaded_filepath_container['path']
+        
+        # If hook didn't provide path, try to find it
+        if not filepath or not os.path.exists(filepath):
+            # Try the expected path first
+            for ext in ['.mp4', '.webm', '.mkv', '.m4a']:
+                test_path = os.path.join(DOWNLOAD_DIR, safe_title + ext)
+                if os.path.exists(test_path):
+                    filepath = test_path
+                    break
             
-            # Add delay between retries
-            if attempt > 0:
-                time.sleep(retry_delay * attempt)
-            
-            # Create progress callback
-            def progress_callback(stream, chunk, bytes_remaining):
-                on_progress_callback(stream, chunk, bytes_remaining, download_id)
-            
-            # Use ANDROID_VR as default (pytubefix default)
-            yt = YouTube(url, client='ANDROID_VR', on_progress_callback=progress_callback)
-            
-            update_progress(download_id, 5, 'fetching_streams')
-            
-            if itag:
-                stream = yt.streams.get_by_itag(itag)
-            elif quality == 'highest':
-                stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-            elif quality == 'lowest':
-                stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').asc().first()
-            else:
-                stream = yt.streams.filter(progressive=True, file_extension='mp4', resolution=quality).first()
-            
-            if not stream:
-                update_progress(download_id, 0, 'error')
-                return None, "No suitable stream found"
-            
-            update_progress(download_id, 10, 'downloading')
-            
-            # Download to temporary file
-            filename = secure_filename(yt.title) + '.mp4'
-            filepath = os.path.join(DOWNLOAD_DIR, filename)
-            stream.download(output_path=DOWNLOAD_DIR, filename=filename)
-            
+            # If still not found, search by prefix
+            if not filepath or not os.path.exists(filepath):
+                base_name = safe_title
+                for file in os.listdir(DOWNLOAD_DIR):
+                    if file.startswith(base_name) and file.endswith(('.mp4', '.webm', '.mkv')):
+                        filepath = os.path.join(DOWNLOAD_DIR, file)
+                        break
+        
+        if filepath and os.path.exists(filepath):
             update_progress(download_id, 100, 'completed', filepath)
             return filepath, None
-        except Exception as e:
-            last_error = e
-            error_msg = str(e)
-            # Don't retry on certain errors
-            if 'LoginRequired' in error_msg or 'VideoUnavailable' in error_msg:
-                break
-            continue
-    
-    # All retries failed
-    update_progress(download_id, 0, 'error')
-    error_msg = str(last_error) if last_error else "Unknown error"
-    if '429' in error_msg or 'Too Many Requests' in error_msg:
-        return None, "Rate limit exceeded. Please wait 5-10 minutes before trying again."
-    elif 'bot' in error_msg.lower() or 'automated' in error_msg.lower():
-        return None, "YouTube detected automated access. This is a known limitation. Try waiting 10-15 minutes or use a different network."
-    else:
-        return None, f"Error after {max_retries} attempts: {error_msg}"
+        else:
+            error_msg = f"Downloaded file not found. Searched in {DOWNLOAD_DIR}"
+            update_progress(download_id, 0, 'error', error_msg=error_msg)
+            return None, error_msg
+                
+    except Exception as e:
+        error_msg = str(e)
+        update_progress(download_id, 0, 'error', error_msg=error_msg)
+        return None, error_msg
 
 
 @app.route('/')
@@ -335,7 +364,7 @@ def index():
                 
                 const statusMessages = {
                     'initializing': 'Initializing download...',
-                    'fetching_streams': 'Fetching video streams...',
+                    'fetching_info': 'Fetching video information...',
                     'downloading': 'Downloading video...',
                     'completed': 'Download complete!',
                     'error': 'Error occurred'
@@ -360,7 +389,8 @@ def index():
                             } else if (data.status === 'error') {
                                 clearInterval(progressInterval);
                                 document.getElementById('downloadBtn').disabled = false;
-                                document.getElementById('error').textContent = 'Error: Download failed';
+                                const errorMsg = data.error || 'Download failed';
+                                document.getElementById('error').textContent = 'Error: ' + errorMsg;
                                 document.getElementById('error').style.display = 'block';
                                 document.getElementById('progressContainer').style.display = 'none';
                             }
@@ -472,7 +502,6 @@ def api_download():
     data = request.get_json()
     url = data.get('url') if data else None
     quality = data.get('quality', 'highest') if data else 'highest'
-    itag = data.get('itag') if data else None
     
     if not url:
         return jsonify({'success': False, 'error': 'URL parameter is required'}), 400
@@ -483,7 +512,7 @@ def api_download():
     
     # Start download in background thread
     def download_thread():
-        download_video(url, download_id, itag=int(itag) if itag else None, quality=quality)
+        download_video(url, download_id, quality=quality)
     
     thread = threading.Thread(target=download_thread)
     thread.daemon = True
@@ -538,11 +567,15 @@ def api_progress(download_id):
         if not progress_data:
             return jsonify({'success': False, 'error': 'Download ID not found'}), 404
         
-        return jsonify({
+        response = {
             'success': True,
             'progress': progress_data['progress'],
             'status': progress_data['status']
-        })
+        }
+        if 'error' in progress_data:
+            response['error'] = progress_data['error']
+        
+        return jsonify(response)
 
 
 @app.route('/health', methods=['GET'])
