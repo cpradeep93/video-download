@@ -32,42 +32,55 @@ def update_progress(download_id, progress, status='downloading', filepath=None):
             download_files[download_id] = filepath
 
 
-def get_video_info(url):
-    """Get video information without downloading"""
-    try:
-        # Use ANDROID_VR as default (pytubefix default) to avoid triggering rate limits
-        # Trying multiple clients quickly can cause 429 errors
-        yt = YouTube(url, client='ANDROID_VR')
-        streams = yt.streams.filter(progressive=True, file_extension='mp4')
-        
-        video_info = {
-            'title': yt.title,
-            'author': yt.author,
-            'length': yt.length,
-            'views': yt.views,
-            'thumbnail': yt.thumbnail_url,
-            'available_streams': []
-        }
-        
-        for stream in streams.order_by('resolution').desc():
-            video_info['available_streams'].append({
-                'itag': stream.itag,
-                'resolution': stream.resolution,
-                'fps': stream.fps,
-                'filesize': stream.filesize,
-                'mime_type': stream.mime_type
-            })
-        
-        return video_info, None
-    except Exception as e:
-        error_msg = str(e)
-        # Handle specific error messages
-        if '429' in error_msg or 'Too Many Requests' in error_msg:
-            return None, "Rate limit exceeded. Please wait a few minutes before trying again. YouTube has temporarily limited requests from this server."
-        elif 'bot' in error_msg.lower():
-            return None, "YouTube detected automated access. This is a known limitation. Please try again later or use a different network."
-        else:
-            return None, error_msg
+def get_video_info(url, max_retries=3, retry_delay=2):
+    """Get video information without downloading with retry logic"""
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            # Add delay between retries to avoid rate limiting
+            if attempt > 0:
+                time.sleep(retry_delay * attempt)  # Exponential backoff
+            
+            # Use ANDROID_VR as default (pytubefix default)
+            yt = YouTube(url, client='ANDROID_VR')
+            streams = yt.streams.filter(progressive=True, file_extension='mp4')
+            
+            video_info = {
+                'title': yt.title,
+                'author': yt.author,
+                'length': yt.length,
+                'views': yt.views,
+                'thumbnail': yt.thumbnail_url,
+                'available_streams': []
+            }
+            
+            for stream in streams.order_by('resolution').desc():
+                video_info['available_streams'].append({
+                    'itag': stream.itag,
+                    'resolution': stream.resolution,
+                    'fps': stream.fps,
+                    'filesize': stream.filesize,
+                    'mime_type': stream.mime_type
+                })
+            
+            return video_info, None
+        except Exception as e:
+            last_error = e
+            error_msg = str(e)
+            # Don't retry on certain errors
+            if 'LoginRequired' in error_msg or 'VideoUnavailable' in error_msg:
+                break
+            continue
+    
+    # All retries failed
+    error_msg = str(last_error) if last_error else "Unknown error"
+    if '429' in error_msg or 'Too Many Requests' in error_msg:
+        return None, "Rate limit exceeded. Please wait 5-10 minutes before trying again."
+    elif 'bot' in error_msg.lower() or 'automated' in error_msg.lower():
+        return None, "YouTube detected automated access. This is a known limitation of pytubefix. Possible solutions: 1) Wait 10-15 minutes, 2) Try from a different network, 3) Use a browser extension for manual downloads."
+    else:
+        return None, f"Error: {error_msg}"
 
 
 def on_progress_callback(stream, chunk, bytes_remaining, download_id):
@@ -78,52 +91,66 @@ def on_progress_callback(stream, chunk, bytes_remaining, download_id):
     update_progress(download_id, progress, 'downloading')
 
 
-def download_video(url, download_id, itag=None, quality='highest'):
-    """Download YouTube video with progress tracking"""
-    try:
-        update_progress(download_id, 0, 'initializing')
-        
-        # Create progress callback
-        def progress_callback(stream, chunk, bytes_remaining):
-            on_progress_callback(stream, chunk, bytes_remaining, download_id)
-        
-        # Use ANDROID_VR as default (pytubefix default) to avoid triggering rate limits
-        yt = YouTube(url, client='ANDROID_VR', on_progress_callback=progress_callback)
-        
-        update_progress(download_id, 5, 'fetching_streams')
-        
-        if itag:
-            stream = yt.streams.get_by_itag(itag)
-        elif quality == 'highest':
-            stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-        elif quality == 'lowest':
-            stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').asc().first()
-        else:
-            stream = yt.streams.filter(progressive=True, file_extension='mp4', resolution=quality).first()
-        
-        if not stream:
-            update_progress(download_id, 0, 'error')
-            return None, "No suitable stream found"
-        
-        update_progress(download_id, 10, 'downloading')
-        
-        # Download to temporary file
-        filename = secure_filename(yt.title) + '.mp4'
-        filepath = os.path.join(DOWNLOAD_DIR, filename)
-        stream.download(output_path=DOWNLOAD_DIR, filename=filename)
-        
-        update_progress(download_id, 100, 'completed', filepath)
-        return filepath, None
-    except Exception as e:
-        update_progress(download_id, 0, 'error')
-        error_msg = str(e)
-        # Handle specific error messages
-        if '429' in error_msg or 'Too Many Requests' in error_msg:
-            return None, "Rate limit exceeded. Please wait a few minutes before trying again. YouTube has temporarily limited requests from this server."
-        elif 'bot' in error_msg.lower():
-            return None, "YouTube detected automated access. This is a known limitation. Please try again later."
-        else:
-            return None, error_msg
+def download_video(url, download_id, itag=None, quality='highest', max_retries=3, retry_delay=2):
+    """Download YouTube video with progress tracking and retry logic"""
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            update_progress(download_id, 0, f'initializing (attempt {attempt + 1}/{max_retries})')
+            
+            # Add delay between retries
+            if attempt > 0:
+                time.sleep(retry_delay * attempt)
+            
+            # Create progress callback
+            def progress_callback(stream, chunk, bytes_remaining):
+                on_progress_callback(stream, chunk, bytes_remaining, download_id)
+            
+            # Use ANDROID_VR as default (pytubefix default)
+            yt = YouTube(url, client='ANDROID_VR', on_progress_callback=progress_callback)
+            
+            update_progress(download_id, 5, 'fetching_streams')
+            
+            if itag:
+                stream = yt.streams.get_by_itag(itag)
+            elif quality == 'highest':
+                stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
+            elif quality == 'lowest':
+                stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').asc().first()
+            else:
+                stream = yt.streams.filter(progressive=True, file_extension='mp4', resolution=quality).first()
+            
+            if not stream:
+                update_progress(download_id, 0, 'error')
+                return None, "No suitable stream found"
+            
+            update_progress(download_id, 10, 'downloading')
+            
+            # Download to temporary file
+            filename = secure_filename(yt.title) + '.mp4'
+            filepath = os.path.join(DOWNLOAD_DIR, filename)
+            stream.download(output_path=DOWNLOAD_DIR, filename=filename)
+            
+            update_progress(download_id, 100, 'completed', filepath)
+            return filepath, None
+        except Exception as e:
+            last_error = e
+            error_msg = str(e)
+            # Don't retry on certain errors
+            if 'LoginRequired' in error_msg or 'VideoUnavailable' in error_msg:
+                break
+            continue
+    
+    # All retries failed
+    update_progress(download_id, 0, 'error')
+    error_msg = str(last_error) if last_error else "Unknown error"
+    if '429' in error_msg or 'Too Many Requests' in error_msg:
+        return None, "Rate limit exceeded. Please wait 5-10 minutes before trying again."
+    elif 'bot' in error_msg.lower() or 'automated' in error_msg.lower():
+        return None, "YouTube detected automated access. This is a known limitation. Try waiting 10-15 minutes or use a different network."
+    else:
+        return None, f"Error after {max_retries} attempts: {error_msg}"
 
 
 @app.route('/')
