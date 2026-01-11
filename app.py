@@ -35,8 +35,9 @@ def update_progress(download_id, progress, status='downloading', filepath=None):
 def get_video_info(url):
     """Get video information without downloading"""
     try:
-        # Use ANDROID client to avoid bot detection
-        yt = YouTube(url, client='ANDROID')
+        # Use ANDROID_VR as default (pytubefix default) to avoid triggering rate limits
+        # Trying multiple clients quickly can cause 429 errors
+        yt = YouTube(url, client='ANDROID_VR')
         streams = yt.streams.filter(progressive=True, file_extension='mp4')
         
         video_info = {
@@ -59,7 +60,14 @@ def get_video_info(url):
         
         return video_info, None
     except Exception as e:
-        return None, str(e)
+        error_msg = str(e)
+        # Handle specific error messages
+        if '429' in error_msg or 'Too Many Requests' in error_msg:
+            return None, "Rate limit exceeded. Please wait a few minutes before trying again. YouTube has temporarily limited requests from this server."
+        elif 'bot' in error_msg.lower():
+            return None, "YouTube detected automated access. This is a known limitation. Please try again later or use a different network."
+        else:
+            return None, error_msg
 
 
 def on_progress_callback(stream, chunk, bytes_remaining, download_id):
@@ -79,8 +87,8 @@ def download_video(url, download_id, itag=None, quality='highest'):
         def progress_callback(stream, chunk, bytes_remaining):
             on_progress_callback(stream, chunk, bytes_remaining, download_id)
         
-        # Use ANDROID client to avoid bot detection
-        yt = YouTube(url, client='ANDROID', on_progress_callback=progress_callback)
+        # Use ANDROID_VR as default (pytubefix default) to avoid triggering rate limits
+        yt = YouTube(url, client='ANDROID_VR', on_progress_callback=progress_callback)
         
         update_progress(download_id, 5, 'fetching_streams')
         
@@ -108,7 +116,14 @@ def download_video(url, download_id, itag=None, quality='highest'):
         return filepath, None
     except Exception as e:
         update_progress(download_id, 0, 'error')
-        return None, str(e)
+        error_msg = str(e)
+        # Handle specific error messages
+        if '429' in error_msg or 'Too Many Requests' in error_msg:
+            return None, "Rate limit exceeded. Please wait a few minutes before trying again. YouTube has temporarily limited requests from this server."
+        elif 'bot' in error_msg.lower():
+            return None, "YouTube detected automated access. This is a known limitation. Please try again later."
+        else:
+            return None, error_msg
 
 
 @app.route('/')
