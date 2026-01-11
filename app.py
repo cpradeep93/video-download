@@ -15,6 +15,9 @@ app.logger.setLevel(logging.INFO)
 # Configure temporary directory for downloads
 DOWNLOAD_DIR = tempfile.gettempdir()
 
+# Optional: Path to cookies file (set via environment variable or upload)
+COOKIES_FILE = os.environ.get('COOKIES_FILE', None)
+
 # Store download progress (in production, use Redis or database)
 download_progress = {}
 download_files = {}  # Store filepath with download_id
@@ -44,10 +47,14 @@ def get_video_info(url):
             'extract_flat': False,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web'],
+                    'player_client': ['ios', 'android', 'web'],
                 }
             },
         }
+        
+        # Add cookies if available
+        if COOKIES_FILE and os.path.exists(COOKIES_FILE):
+            ydl_opts['cookiefile'] = COOKIES_FILE
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -131,10 +138,14 @@ def download_video(url, download_id, quality='highest'):
             'no_warnings': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web'],
+                    'player_client': ['ios', 'android', 'web'],
                 }
             },
         }
+        
+        # Add cookies if available
+        if COOKIES_FILE and os.path.exists(COOKIES_FILE):
+            ydl_opts_info['cookiefile'] = COOKIES_FILE
         
         with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -152,10 +163,14 @@ def download_video(url, download_id, quality='highest'):
             'no_warnings': False,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web'],
+                    'player_client': ['ios', 'android', 'web'],
                 }
             },
         }
+        
+        # Add cookies if available
+        if COOKIES_FILE and os.path.exists(COOKIES_FILE):
+            ydl_opts['cookiefile'] = COOKIES_FILE
         
         update_progress(download_id, 10, 'downloading')
         
