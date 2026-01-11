@@ -35,7 +35,8 @@ def update_progress(download_id, progress, status='downloading', filepath=None):
 def get_video_info(url):
     """Get video information without downloading"""
     try:
-        yt = YouTube(url)
+        # Use ANDROID client to avoid bot detection
+        yt = YouTube(url, client='ANDROID')
         streams = yt.streams.filter(progressive=True, file_extension='mp4')
         
         video_info = {
@@ -78,7 +79,8 @@ def download_video(url, download_id, itag=None, quality='highest'):
         def progress_callback(stream, chunk, bytes_remaining):
             on_progress_callback(stream, chunk, bytes_remaining, download_id)
         
-        yt = YouTube(url, on_progress_callback=progress_callback)
+        # Use ANDROID client to avoid bot detection
+        yt = YouTube(url, client='ANDROID', on_progress_callback=progress_callback)
         
         update_progress(download_id, 5, 'fetching_streams')
         
