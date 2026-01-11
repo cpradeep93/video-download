@@ -1,11 +1,12 @@
 # YouTube Video Downloader - Flask Application
 
-A Flask web application to download YouTube videos using pytube (without yt-dlp), designed to run on Render.com.
+A Flask web application to download YouTube videos using pytubefix (without yt-dlp), designed to run on Render.com.
 
 ## Features
 
 - Download YouTube videos in various quality options
 - Get video information (title, author, duration, views)
+- Real-time progress bar during download
 - Simple web interface
 - REST API endpoints
 - Ready for Render.com deployment
@@ -22,6 +23,11 @@ pip install -r requirements.txt
 python app.py
 ```
 
+Or for production (using gunicorn):
+```bash
+gunicorn app:app --bind 0.0.0.0:5000
+```
+
 3. Open your browser and navigate to `http://localhost:5000`
 
 ## Deployment to Render.com
@@ -34,10 +40,23 @@ python app.py
    - Render will auto-detect the settings from `render.yaml`
    - Or manually configure:
      - **Build Command**: `pip install -r requirements.txt`
-     - **Start Command**: `python app.py`
+     - **Start Command**: `gunicorn app:app --bind 0.0.0.0:$PORT`
      - **Environment**: Python 3
 
 3. The application will be automatically deployed
+
+### Start Command for Render.com
+
+When setting up manually on Render.com, use this start command:
+
+```
+gunicorn app:app --bind 0.0.0.0:$PORT
+```
+
+This command:
+- Uses `gunicorn` (production WSGI server)
+- `app:app` refers to the `app` variable in `app.py`
+- `--bind 0.0.0.0:$PORT` binds to all interfaces on Render's PORT
 
 ## API Endpoints
 
@@ -67,18 +86,31 @@ GET /api/info?url=https://www.youtube.com/watch?v=VIDEO_ID
 }
 ```
 
-### GET `/api/download`
-Download a YouTube video.
+### POST `/api/download`
+Start a video download (returns download_id for progress tracking).
 
-**Parameters:**
-- `url` (required): YouTube video URL
-- `quality` (optional): Video quality (`highest`, `lowest`, `720p`, `480p`, etc.)
-- `itag` (optional): Specific stream itag
+**Body:**
+```json
+{
+  "url": "https://www.youtube.com/watch?v=VIDEO_ID",
+  "quality": "720p"
+}
+```
 
-**Example:**
+### GET `/api/progress/<download_id>`
+Get download progress.
+
+**Response:**
+```json
+{
+  "success": true,
+  "progress": 75.5,
+  "status": "downloading"
+}
 ```
-GET /api/download?url=https://www.youtube.com/watch?v=VIDEO_ID&quality=720p
-```
+
+### GET `/api/download/<download_id>/file`
+Download the completed video file.
 
 ## Important Notes
 
@@ -88,7 +120,8 @@ GET /api/download?url=https://www.youtube.com/watch?v=VIDEO_ID&quality=720p
 
 - Python 3.7+
 - Flask 3.0.0
-- pytube 15.0.0
+- pytubefix 10.3.6 (fixed fork of pytube)
+- gunicorn 21.2.0 (for production deployment)
 
 ## License
 
